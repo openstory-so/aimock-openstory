@@ -211,6 +211,38 @@ export class LLMock {
   }
 
   /**
+   * Pre-populate an object in the S3 mock so subsequent GET / HEAD requests
+   * to `/s3/<bucket>/<key>` return it. Only meaningful when `options.s3.enabled`
+   * is true. Throws if the server isn't running yet — state lives on the
+   * server instance, not on the builder.
+   *
+   * Body is accepted as `Uint8Array`, `Buffer`, or `string` (utf-8 encoded).
+   */
+  putS3Object(
+    bucket: string,
+    key: string,
+    body: Uint8Array | Buffer | string,
+    opts?: { contentType?: string; etag?: string },
+  ): this {
+    if (!this.serverInstance) {
+      throw new Error("putS3Object: server not started — call start() first");
+    }
+    const bytes =
+      typeof body === "string"
+        ? new TextEncoder().encode(body)
+        : body instanceof Buffer
+          ? new Uint8Array(body)
+          : body;
+    const etag = opts?.etag ?? `"mock-${bytes.byteLength}"`;
+    this.serverInstance.s3State.set(bucket, key, {
+      body: bytes,
+      contentType: opts?.contentType,
+      etag,
+    });
+    return this;
+  }
+
+  /**
    * Queue a one-shot error that will be returned for the next matching
    * request, then automatically removed. Implemented as an internal fixture
    * with a `predicate` that always matches (so it fires first) and spliced
@@ -321,6 +353,7 @@ export class LLMock {
     if (this.serverInstance) {
       this.serverInstance.journal.clear();
       this.serverInstance.videoStates.clear();
+      this.serverInstance.s3State.clear();
     }
     return this;
   }

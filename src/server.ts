@@ -42,6 +42,13 @@ import { handleTranscription } from "./transcription.js";
 import { handleVideoCreate, handleVideoStatus, VideoStateMap } from "./video.js";
 import { handleElevenLabsAudio } from "./elevenlabs-audio.js";
 import { handleFalQueue, falJobs } from "./fal-audio.js";
+import {
+  handleS3,
+  S3State,
+  S3_PREFIX_RE,
+  type S3HandlerConfig,
+  type S3Mode,
+} from "./s3-handler.js";
 import { handleOllama, handleOllamaGenerate } from "./ollama.js";
 import { handleCohere } from "./cohere.js";
 import { handleSearch, type SearchFixture } from "./search.js";
@@ -62,6 +69,7 @@ export interface ServerInstance {
   url: string;
   defaults: HandlerDefaults;
   videoStates: VideoStateMap;
+  s3State: S3State;
 }
 
 const COMPLETIONS_PATH = "/v1/chat/completions";
@@ -217,6 +225,7 @@ async function handleControlAPI(
   fixtures: Fixture[],
   journal: Journal,
   videoStates: VideoStateMap,
+  s3State: S3State,
   defaults: HandlerDefaults,
 ): Promise<boolean> {
   if (!pathname.startsWith(CONTROL_PREFIX)) return false;
@@ -303,6 +312,7 @@ async function handleControlAPI(
     journal.clear();
     videoStates.clear();
     falJobs.clear();
+    s3State.clear();
     if (defaults.registry) {
       defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
     }
@@ -883,6 +893,25 @@ export async function createServer(
     fixtureCountsMaxTestIds: options?.fixtureCountsMaxTestIds ?? 500,
   });
   const videoStates = new VideoStateMap();
+  const s3State = new S3State();
+
+  // ─── S3 handler config ──────────────────────────────────────────────────
+  // Resolved once at startup since neither mode nor fixtureDir change at
+  // runtime. mode defaults to 'record' when recording is enabled so the
+  // S3 path follows the same record-vs-replay switch as the LLM path.
+  const s3Enabled = options?.s3?.enabled === true;
+  const s3Mode: S3Mode = options?.s3?.mode ?? (options?.record ? "record" : "live");
+  const s3FixtureDir =
+    options?.s3?.fixtureDir ??
+    (options?.record?.fixturePath ? `${options.record.fixturePath}/s3` : "./fixtures/recorded/s3");
+  const s3MaxBodyBytes = options?.s3?.maxBodyBytes ?? 50 * 1024 * 1024;
+  const s3Config: S3HandlerConfig = {
+    mode: s3Mode,
+    fixtureDir: s3FixtureDir,
+    logger,
+    upstream: options?.s3?.upstream,
+    publicUrlBuilder: options?.s3?.publicUrlBuilder,
+  };
 
   // Share journal and metrics registry with mounted services
   if (mounts) {
@@ -954,7 +983,7 @@ export async function createServer(
 
     // Control API — must be checked before mounts and path rewrites
     if (pathname.startsWith(CONTROL_PREFIX)) {
-      await handleControlAPI(req, res, pathname, fixtures, journal, videoStates, defaults);
+      await handleControlAPI(req, res, pathname, fixtures, journal, videoStates, s3State, defaults);
       return;
     }
 
@@ -967,6 +996,28 @@ export async function createServer(
           if (handled) return;
         }
       }
+    }
+
+    // S3-compatible endpoints — must dispatch before normalizeCompatPath so
+    // S3 keys like `/s3/<bucket>/images/foo.png` aren't accidentally rewritten,
+    // and must skip the chat-completions pipeline entirely.
+    if (s3Enabled && S3_PREFIX_RE.test(pathname)) {
+      setCorsHeaders(res);
+      try {
+        await handleS3(req, res, pathname, s3State, s3Config, journal, s3MaxBodyBytes);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
+      return;
     }
 
     // Azure OpenAI: /openai/deployments/{id}/{operation} → /v1/{operation} (chat/completions, embeddings)
@@ -2085,7 +2136,7 @@ export async function createServer(
         }
       }
 
-      resolve({ server, journal, url, defaults, videoStates });
+      resolve({ server, journal, url, defaults, videoStates, s3State });
     });
   });
 }

@@ -471,6 +471,72 @@ export interface MockServerOptions {
    * positives from shortened keys.
    */
   requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  /**
+   * Enable the S3-compatible mock endpoint at `/s3/<bucket>/<key>`. Off by
+   * default — opt in by passing `{ enabled: true }`. Behaviour depends on
+   * `mode`:
+   *   - 'live'   (default when `record` is unset): pure in-memory PUT/GET/
+   *              HEAD/DELETE. State resets on `LLMock.reset()`.
+   *   - 'record' (default when `record` is set): live + writes a metadata
+   *              fixture per PUT so a later replay finds the same fingerprint.
+   *   - 'replay': PUT looks up a fixture by fingerprint and 503s on miss.
+   * See `src/s3-handler.ts` for details on the fixture layout + fingerprint.
+   */
+  s3?: S3Options;
+}
+
+export interface S3Options {
+  enabled?: boolean;
+  /**
+   * Behaviour mode. When omitted: 'record' if `record` is set on the
+   * server options, otherwise 'live'.
+   */
+  mode?: "live" | "record" | "replay";
+  /**
+   * Directory for fixture files. Layout: `<fixtureDir>/<bucket>/<slug>__<hash>.json`.
+   * Defaults: `<record.fixturePath>/s3` if `record` is set, else
+   * `./fixtures/recorded/s3`.
+   */
+  fixtureDir?: string;
+  /**
+   * Maximum PUT body size in bytes. Defaults to 50 MB — larger than the
+   * default 10 MB LLM body limit so video / image uploads fit naturally.
+   */
+  maxBodyBytes?: number;
+  /**
+   * Real S3-compatible upstream to forward PUTs to in record mode. When set,
+   * the captured body is re-signed with SigV4 and uploaded so bytes actually
+   * land in the real bucket (and downstream GETs against the recorded
+   * `publicUrl` resolve). When omitted, record mode only writes the metadata
+   * fixture — useful in tests of aimock itself.
+   *
+   * `endpoint` is the bucket-less host (e.g. `https://<acct>.r2.cloudflarestorage.com`)
+   * — aimock rebuilds the full URL by appending the path it received from the
+   * client (`/<bucket>/<key>`).
+   */
+  upstream?: S3UpstreamConfig;
+  /**
+   * Build the public-facing URL for a recorded object. Called once per
+   * successful record-mode PUT and persisted in the fixture's `response.publicUrl`
+   * so replay can hand the same URL to downstream consumers (e.g. `<img>` tags
+   * that hit the real CDN). When omitted, `publicUrl` is left unset.
+   */
+  publicUrlBuilder?: (req: { bucket: string; key: string }) => string;
+}
+
+export interface S3UpstreamConfig {
+  /** e.g. `https://<account>.r2.cloudflarestorage.com` — no trailing slash, no bucket. */
+  endpoint: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  /** Optional session token (STS temporary creds). */
+  sessionToken?: string;
+  /** Defaults to `auto` (R2). Set to `us-east-1` etc. for AWS S3. */
+  region?: string;
+  /** Defaults to `s3`. */
+  service?: string;
+  /** Per-request timeout in ms. Defaults to 30s. */
+  timeoutMs?: number;
 }
 
 // Handler defaults — the common shape passed from server.ts to every handler

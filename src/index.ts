@@ -93,6 +93,26 @@ export { handleVideoCreate, handleVideoStatus, VideoStateMap } from "./video.js"
 export { handleElevenLabsAudio } from "./elevenlabs-audio.js";
 export { handleFalQueue } from "./fal-audio.js";
 
+// S3 mock
+export { handleS3, S3State, S3_PREFIX_RE } from "./s3-handler.js";
+export type { S3HandlerConfig, S3Mode, S3Object } from "./s3-handler.js";
+export {
+  bodyHashHex,
+  fingerprintHash,
+  fixturePath as s3FixturePath,
+  normaliseKey as normaliseS3Key,
+  tryReadFixture as tryReadS3Fixture,
+  writeFixture as writeS3Fixture,
+} from "./s3-recorder.js";
+export type {
+  S3Fingerprint,
+  S3FixtureFile,
+  S3FixtureRequest,
+  S3FixtureResponse,
+} from "./s3-recorder.js";
+export { signS3PutRequest } from "./s3-sigv4.js";
+export type { SigV4Credentials, SigV4PutRequest, SignedRequest } from "./s3-sigv4.js";
+
 // Helpers
 export {
   flattenHeaders,
@@ -342,4 +362,6 @@ export type {
   FixtureFileTextResponse,
   FixtureFileToolCallResponse,
   FixtureFileContentWithToolCallsResponse,
+  S3Options,
+  S3UpstreamConfig,
 } from "./types.js";
